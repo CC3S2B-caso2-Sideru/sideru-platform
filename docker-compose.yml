@@ -41,22 +41,22 @@ services:
       timeout: 5s
       retries: 5
 
-  # PostgreSQL Backend DB
-  postgres-backend:
+  # PostgreSQL Pedidos DB
+  postgres-pedidos:
     image: postgres:16-alpine
-    container_name: postgres-backend
+    container_name: postgres-pedidos
     ports:
       - "5435:5432"
     environment:
-      POSTGRES_DB: backend_db
+      POSTGRES_DB: pedidos_db
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
-      - ./db/backend/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
-      - ./db/backend/02-data.sql:/docker-entrypoint-initdb.d/02-data.sql
-      - pgdata-backend:/var/lib/postgresql/data
+      - ./db/pedidos/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./db/pedidos/02-data.sql:/docker-entrypoint-initdb.d/02-data.sql
+      - pgdata-pedidos:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d backend_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d pedidos_db"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -74,7 +74,7 @@ services:
         condition: service_healthy
       postgres-catalogo:
         condition: service_healthy
-      postgres-backend:
+      postgres-pedidos:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8888/actuator/health || exit 1"]
@@ -143,20 +143,20 @@ services:
       eureka-server:
         condition: service_healthy
 
-  # Backend Service (monolito)
-  backend-service:
-    build: ./backend
-    container_name: backend-service
+  # Pedidos Service
+  pedidos-service:
+    build: ./pedidos
+    container_name: pedidos-service
     ports:
       - "8083:8083"
     environment:
       - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://eureka-server:8761/eureka
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-backend:5432/backend_db
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-pedidos:5432/pedidos_db
       - SPRING_DATASOURCE_USERNAME=${DB_USER}
       - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
     depends_on:
-      postgres-backend:
+      postgres-pedidos:
         condition: service_healthy
       config-server:
         condition: service_healthy
@@ -182,10 +182,10 @@ services:
         condition: service_started
       catalogo-service:
         condition: service_started
-      backend-service:
+      pedidos-service:
         condition: service_started
 
 volumes:
   pgdata-iam:
   pgdata-catalogo:
-  pgdata-backend:
+  pgdata-pedidos:

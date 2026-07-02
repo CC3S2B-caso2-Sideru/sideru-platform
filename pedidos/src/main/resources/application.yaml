@@ -1,5 +1,5 @@
 spring:
   application:
-    name: backend-service
+    name: pedidos-service
   config:
     import: ${SPRING_CONFIG_IMPORT:optional:configserver:http://localhost:8888}

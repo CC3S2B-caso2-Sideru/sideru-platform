@@ -55,21 +55,21 @@ spring:
                 - Path=/admin,/admin/**
               filters:
                 - RewritePath=/admin(/.*)?, /api/admin$1
-            # Backend
-            - id: backend-cotizaciones
-              uri: lb://backend-service
+            # Pedidos y Cotizaciones
+            - id: pedidos-cotizaciones
+              uri: lb://pedidos-service
               predicates:
                 - Path=/cotizaciones,/cotizaciones/**
               filters:
                 - RewritePath=/cotizaciones(/.*)?, /api/cotizaciones$1
-            - id: backend-pedidos
-              uri: lb://backend-service
+            - id: pedidos-pedidos
+              uri: lb://pedidos-service
               predicates:
                 - Path=/pedidos,/pedidos/**
               filters:
                 - RewritePath=/pedidos(/.*)?, /api/pedidos$1
-            - id: backend-reportes
-              uri: lb://backend-service
+            - id: pedidos-reportes
+              uri: lb://pedidos-service
               predicates:
                 - Path=/reportes,/reportes/**
               filters:

@@ -52,6 +52,6 @@
         <module>api-gateway</module>
         <module>iam</module>
         <module>catalogo</module>
-        <module>backend</module>
+        <module>pedidos</module>
     </modules>
 </project>

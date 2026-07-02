@@ -1,13 +1,13 @@
-# Backend Service (monolito residual) — configuración centralizada
+# Pedidos Service — configuración centralizada
 server:
   port: 8083
 
 spring:
   application:
-    name: backend-service
+    name: pedidos-service
   datasource:
     driver-class-name: org.postgresql.Driver
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5435/backend_db}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5435/pedidos_db}
     username: ${SPRING_DATASOURCE_USERNAME:admin}
     password: ${SPRING_DATASOURCE_PASSWORD:admin}
   jpa:
