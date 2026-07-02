@@ -1,0 +1,73 @@
+# API Gateway — configuración centralizada
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+      routes:
+        # IAM (auth + usuarios)
+        - id: iam-auth
+          uri: lb://IAM-SERVICE
+          predicates:
+            - Path=/auth/**
+          filters:
+            - RewritePath=/auth/(?<segment>.*), /api/auth/${segment}
+        - id: iam-usuarios
+          uri: lb://IAM-SERVICE
+          predicates:
+            - Path=/usuarios/**
+          filters:
+            - RewritePath=/usuarios/(?<segment>.*), /api/usuarios/${segment}
+        # Catálogo (productos + categorías)
+        - id: catalogo-productos
+          uri: lb://CATALOGO-SERVICE
+          predicates:
+            - Path=/productos/**
+          filters:
+            - RewritePath=/productos/(?<segment>.*), /api/productos/${segment}
+        - id: catalogo-categorias
+          uri: lb://CATALOGO-SERVICE
+          predicates:
+            - Path=/categorias/**
+          filters:
+            - RewritePath=/categorias/(?<segment>.*), /api/categorias/${segment}
+        - id: catalogo-admin
+          uri: lb://CATALOGO-SERVICE
+          predicates:
+            - Path=/admin/productos/**
+          filters:
+            - RewritePath=/admin/productos/(?<segment>.*), /api/admin/productos/${segment}
+        # Backend (ventas + reportes + futuros)
+        - id: backend-cotizaciones
+          uri: lb://BACKEND-SERVICE
+          predicates:
+            - Path=/cotizaciones/**
+          filters:
+            - RewritePath=/cotizaciones/(?<segment>.*), /api/cotizaciones/${segment}
+        - id: backend-pedidos
+          uri: lb://BACKEND-SERVICE
+          predicates:
+            - Path=/pedidos/**
+          filters:
+            - RewritePath=/pedidos/(?<segment>.*), /api/pedidos/${segment}
+        - id: backend-reportes
+          uri: lb://BACKEND-SERVICE
+          predicates:
+            - Path=/reportes/**
+          filters:
+            - RewritePath=/reportes/(?<segment>.*), /api/reportes/${segment}
+
+eureka:
+  instance:
+    prefer-ip-address: true
+  client:
+    register-with-eureka: false
+    fetch-registry: true
+    service-url:
+      defaultZone: http://localhost:8761/eureka/

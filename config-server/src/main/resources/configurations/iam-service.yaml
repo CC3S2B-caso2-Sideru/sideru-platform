@@ -1,0 +1,28 @@
+# IAM Service — configuración centralizada
+server:
+  port: 8081
+
+spring:
+  application:
+    name: iam-service
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/iam_db}
+    username: ${SPRING_DATASOURCE_USERNAME:admin}
+    password: ${SPRING_DATASOURCE_PASSWORD:admin}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+
+security:
+  jwt:
+    secret-key: ${JWT_KEY}
+    expiration-ms: 86400000
+
+eureka:
+  instance:
+    prefer-ip-address: true
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
