@@ -61,19 +61,19 @@ WHERE codigo IN ('empleado.ver','empleado.crear','asistencia.ver','planilla.ver'
 INSERT INTO rol_permiso (rol_id, permiso_id) SELECT 6, id FROM permiso
 WHERE codigo IN ('cotizacion.ver','cotizacion.crear');
 
--- Usuarios (contraseñas hasheadas con BCrypt del proyecto original)
+-- Usuarios (hashes BCrypt copiados del proyecto monolito original)
 INSERT INTO usuario (rol_id, tipo, username, email, password_hash) VALUES
-    (1, 'INTERNO', 'admin.torres',    'admin@siderurgicaperu.com',     '$2b$12$HASH_ADMIN_001'),
-    (2, 'INTERNO', 'gerente.vargas',  'gerente@siderurgicaperu.com',   '$2b$12$HASH_GERE_001'),
-    (3, 'INTERNO', 'vendedor.luna',   'vluna@siderurgicaperu.com',     '$2b$12$HASH_VEND_001'),
-    (3, 'INTERNO', 'vendedor.rios',   'vrios@siderurgicaperu.com',     '$2b$12$HASH_VEND_002'),
-    (4, 'INTERNO', 'almacen.huanca',  'ahuanca@siderurgicaperu.com',   '$2b$12$HASH_ALMA_001'),
-    (5, 'INTERNO', 'rrhh.mendoza',    'rmendoza@siderurgicaperu.com',  '$2b$12$HASH_RRHH_001'),
-    (6, 'CLIENTE', 'acero_sur',       'compras@acerosur.com.pe',       '$2a$10$GB4LsBTGQo4dVC4lNUNWVePNFcTSsB9H9S.CvJAKq3b.9wtzk6Sri'),
-    (6, 'CLIENTE', 'construcciones',  'admin@construccionesrm.pe',     '$2a$10$12YBoiOhIR8nYztvzqs8ge/M633ScKF6Ron2uwelxdrBYbINt.8sW'),
-    (6, 'CLIENTE', 'silva',           'jsilva@gmail.com',              '$2a$10$mxBQoHYDxxp1HOx2AgdOs.lh2nVKSHCRVbqA7IwT9WMOEC7Il0.ou'),
-    (6, 'CLIENTE', 'ferreteria_jm',   'fjm@ferreteriajesusm.pe',       '$2a$10$XBWyCZ17sd7HpjBWP/dakuGGANEudLmfrY7kT/IeAwS0sR47fXjNG'),
-    (6, 'CLIENTE', 'palacios',        'rpalacios@outlook.com',         '$2a$10$TLoldUQeHjEOCIgvjUpA8.3J41G5if5yEy/zCQvyYHYjpCsXgf.Ja');
+    (1, 'INTERNO', 'admin',            'admin@siderurgicaperu.com',     '$2a$10$R2Svc.PJ15/GYbLHXr74We4/uT4Oo.FRyXw21Ey/yVaopWKiBW2nW'),   -- pwd: admin
+    (2, 'INTERNO', 'gerente.vargas',   'gerente@siderurgicaperu.com',   '$2b$12$HASH_GERE_001'),                                         -- placeholder
+    (3, 'INTERNO', 'vendedor.luna',    'vluna@siderurgicaperu.com',     '$2a$10$15YlWTm1vAAMLsGtQj45xuFngVtd2AozwCl3qjudzT6jjoBT/33FW'),  -- pwd: luna
+    (3, 'INTERNO', 'vendedor.rios',    'vrios@siderurgicaperu.com',     '$2b$12$HASH_VEND_002'),                                         -- placeholder
+    (4, 'INTERNO', 'almacen.huanca',   'ahuanca@siderurgicaperu.com',   '$2a$10$xA8ssFOmy267L2P/5eHzeeuxlGC2L0RKvE2dRLyvCgcMQYk5go8r6'), -- pwd: huanca
+    (5, 'INTERNO', 'rrhh.mendoza',     'rmendoza@siderurgicaperu.com',  '$2b$12$HASH_RRHH_001'),                                         -- placeholder
+    (6, 'CLIENTE', 'acero_sur',        'compras@acerosur.com.pe',       '$2a$10$GB4LsBTGQo4dVC4lNUNWVePNFcTSsB9H9S.CvJAKq3b.9wtzk6Sri'), -- pwd: acero
+    (6, 'CLIENTE', 'construcciones',   'admin@construccionesrm.pe',     '$2a$10$12YBoiOhIR8nYztvzqs8ge/M633ScKF6Ron2uwelxdrBYbINt.8sW'), -- pwd: construcciones
+    (6, 'CLIENTE', 'silva',            'jsilva@gmail.com',              '$2a$10$mxBQoHYDxxp1HOx2AgdOs.lh2nVKSHCRVbqA7IwT9WMOEC7Il0.ou'), -- pwd: silva
+    (6, 'CLIENTE', 'ferreteria_jm',    'fjm@ferreteriajesusm.pe',       '$2a$10$XBWyCZ17sd7HpjBWP/dakuGGANEudLmfrY7kT/IeAwS0sR47fXjNG'), -- pwd: ferreteria
+    (6, 'CLIENTE', 'palacios',         'rpalacios@outlook.com',         '$2a$10$TLoldUQeHjEOCIgvjUpA8.3J41G5if5yEy/zCQvyYHYjpCsXgf.Ja');-- pwd: palacios
 
 -- Clientes (IDs 1-5, coinciden con los cliente_id en las cotizaciones de backend_db)
 INSERT INTO cliente (usuario_id, ruc, razon_social, nombre, apellido, telefono, direccion) VALUES

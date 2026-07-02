@@ -1,11 +1,15 @@
 #!/bin/bash
 set -e
 
-echo "===> Construir modulo"
-mvn package -DskipTests -q
+echo "===> Limpiar y compilar"
+mvn clean package -DskipTests -q
 
 echo ""
-echo "===> Empezar/construir los contenedores"
+echo "===> Detener contenedores"
+docker compose down
+
+echo ""
+echo "===> Construir e iniciar"
 docker compose up -d --build
 
 
@@ -19,8 +23,3 @@ echo "  API Gateway:    http://localhost:8080"
 echo "  IAM:            http://localhost:8081"
 echo "  Catálogo:       http://localhost:8082"
 echo "  Backend:        http://localhost:8083"
-echo ""
-echo "Test gateway routing:"
-echo "  curl http://localhost:8080/auth/login         (IAM — 404 expected, no controller yet)"
-echo "  curl http://localhost:8080/productos           (Catálogo — 404 expected, no controller yet)"
-echo "  curl http://localhost:8080/cotizaciones        (Backend — 404 expected, no controller yet)"

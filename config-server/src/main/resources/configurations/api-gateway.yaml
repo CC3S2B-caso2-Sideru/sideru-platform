@@ -1,4 +1,4 @@
-# API Gateway — configuración centralizada
+# API Gateway
 server:
   port: 8080
 
@@ -7,61 +7,73 @@ spring:
     name: api-gateway
   cloud:
     gateway:
-      discovery:
-        locator:
-          enabled: true
-      routes:
-        # IAM (auth + usuarios)
-        - id: iam-auth
-          uri: lb://IAM-SERVICE
-          predicates:
-            - Path=/auth/**
-          filters:
-            - RewritePath=/auth/(?<segment>.*), /api/auth/${segment}
-        - id: iam-usuarios
-          uri: lb://IAM-SERVICE
-          predicates:
-            - Path=/usuarios/**
-          filters:
-            - RewritePath=/usuarios/(?<segment>.*), /api/usuarios/${segment}
-        # Catálogo (productos + categorías)
-        - id: catalogo-productos
-          uri: lb://CATALOGO-SERVICE
-          predicates:
-            - Path=/productos/**
-          filters:
-            - RewritePath=/productos/(?<segment>.*), /api/productos/${segment}
-        - id: catalogo-categorias
-          uri: lb://CATALOGO-SERVICE
-          predicates:
-            - Path=/categorias/**
-          filters:
-            - RewritePath=/categorias/(?<segment>.*), /api/categorias/${segment}
-        - id: catalogo-admin
-          uri: lb://CATALOGO-SERVICE
-          predicates:
-            - Path=/admin/productos/**
-          filters:
-            - RewritePath=/admin/productos/(?<segment>.*), /api/admin/productos/${segment}
-        # Backend (ventas + reportes + futuros)
-        - id: backend-cotizaciones
-          uri: lb://BACKEND-SERVICE
-          predicates:
-            - Path=/cotizaciones/**
-          filters:
-            - RewritePath=/cotizaciones/(?<segment>.*), /api/cotizaciones/${segment}
-        - id: backend-pedidos
-          uri: lb://BACKEND-SERVICE
-          predicates:
-            - Path=/pedidos/**
-          filters:
-            - RewritePath=/pedidos/(?<segment>.*), /api/pedidos/${segment}
-        - id: backend-reportes
-          uri: lb://BACKEND-SERVICE
-          predicates:
-            - Path=/reportes/**
-          filters:
-            - RewritePath=/reportes/(?<segment>.*), /api/reportes/${segment}
+      server:
+        webflux:
+          default-filters:
+            - AddRequestHeader=X-Gateway-Request, true
+          routes:
+            # TEST: ruta directa sin rewrite
+            - id: test-categorias
+              uri: lb://catalogo-service
+              predicates:
+                - Path=/api/categorias
+              filters: []
+            - id: test-login
+              uri: lb://iam-service
+              predicates:
+                - Path=/api/auth/login
+              filters: []
+            # IAM (auth + usuarios)
+            - id: iam-auth
+              uri: lb://iam-service
+              predicates:
+                - Path=/auth,/auth/**
+              filters:
+                - RewritePath=/auth(/.*)?, /api/auth$1
+            - id: iam-usuarios
+              uri: lb://iam-service
+              predicates:
+                - Path=/usuarios,/usuarios/**
+              filters:
+                - RewritePath=/usuarios(/.*)?, /api/usuarios$1
+            # Catálogo (productos + categorías)
+            - id: catalogo-productos
+              uri: lb://catalogo-service
+              predicates:
+                - Path=/productos,/productos/**
+              filters:
+                - RewritePath=/productos(/.*)?, /api/productos$1
+            - id: catalogo-categorias
+              uri: lb://catalogo-service
+              predicates:
+                - Path=/categorias,/categorias/**
+              filters:
+                - RewritePath=/categorias(/.*)?, /api/categorias$1
+            - id: catalogo-admin
+              uri: lb://catalogo-service
+              predicates:
+                - Path=/admin,/admin/**
+              filters:
+                - RewritePath=/admin(/.*)?, /api/admin$1
+            # Backend
+            - id: backend-cotizaciones
+              uri: lb://backend-service
+              predicates:
+                - Path=/cotizaciones,/cotizaciones/**
+              filters:
+                - RewritePath=/cotizaciones(/.*)?, /api/cotizaciones$1
+            - id: backend-pedidos
+              uri: lb://backend-service
+              predicates:
+                - Path=/pedidos,/pedidos/**
+              filters:
+                - RewritePath=/pedidos(/.*)?, /api/pedidos$1
+            - id: backend-reportes
+              uri: lb://backend-service
+              predicates:
+                - Path=/reportes,/reportes/**
+              filters:
+                - RewritePath=/reportes(/.*)?, /api/reportes$1
 
 eureka:
   instance:
@@ -71,3 +83,7 @@ eureka:
     fetch-registry: true
     service-url:
       defaultZone: http://localhost:8761/eureka/
+
+security:
+  jwt:
+    secret-key: ${JWT_KEY}
