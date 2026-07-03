@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iam-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iam-service
+  template:
+    metadata:
+      labels:
+        app: iam-service
+    spec:
+      initContainers:
+        - name: wait-for-infra
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z config-server 8888 && nc -z eureka-server 8761 && nc -z postgres-iam 5432; do sleep 2; done']
+      containers:
+        - name: iam-service
+          image: sideru-platform-iam-service:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SPRING_CONFIG_IMPORT
+              value: "optional:configserver:http://config-server:8888"
+            - name: EUREKA_CLIENT_SERVICEURL_DEFAULTZONE
+              value: "http://eureka-server:8761/eureka"
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:postgresql://postgres-iam:5432/iam_db"
+            - name: SPRING_DATASOURCE_USERNAME
+              value: "admin"
+            - name: SPRING_DATASOURCE_PASSWORD
+              value: "admin"
+            - name: JWT_KEY
+              value: "J30YTKwGARFEj3SfDb8BiHIylhjyH1uLiaOqewBqe8DbVPkf0x5h1Yab5tcQt9rBlUd9gvumkVeb9JVqFBt47Q=="
+          ports:
+            - containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 60
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 60
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iam-service
+spec:
+  ports:
+    - port: 8081
+      targetPort: 8081
+  selector:
+    app: iam-service

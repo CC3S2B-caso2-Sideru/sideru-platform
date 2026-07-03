@@ -1,0 +1,244 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-iam-cm
+data:
+  01-schema.sql: |-
+    -- ============================================
+    -- IAM DB — Schema
+    -- Tablas: rol, permiso, rol_permiso, usuario, cliente
+    -- ============================================
+    
+    CREATE TABLE rol
+    (
+        id          SERIAL PRIMARY KEY,
+        nombre      VARCHAR(80) NOT NULL UNIQUE,
+        descripcion TEXT,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    
+    CREATE TABLE permiso
+    (
+        id          SERIAL PRIMARY KEY,
+        codigo      VARCHAR(100) NOT NULL UNIQUE,
+        modulo      VARCHAR(50)  NOT NULL,
+        accion      VARCHAR(50)  NOT NULL,
+        descripcion TEXT,
+        created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    
+    CREATE TABLE rol_permiso
+    (
+        rol_id     INT         NOT NULL,
+        permiso_id INT         NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (rol_id, permiso_id),
+        FOREIGN KEY (rol_id) REFERENCES rol (id),
+        FOREIGN KEY (permiso_id) REFERENCES permiso (id)
+    );
+    
+    CREATE TABLE usuario
+    (
+        id            SERIAL PRIMARY KEY,
+        rol_id        INT          NOT NULL,
+        tipo          VARCHAR      NOT NULL CHECK (tipo IN ('CLIENTE', 'INTERNO')),
+        username      VARCHAR(60)  NOT NULL UNIQUE,
+        email         VARCHAR(150) NOT NULL UNIQUE,
+        password_hash TEXT         NOT NULL,
+        activo        BOOLEAN               DEFAULT TRUE,
+        ultimo_login  TIMESTAMPTZ,
+        created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (rol_id) REFERENCES rol (id)
+    );
+    
+    /*
+     * cliente está en la misma DB que usuario porque la relación usuario<->cliente
+     * es 1:1 y se usan juntos en cada request autenticado.
+     * Los microservicios que necesitan datos de cliente los obtienen vía REST a IAM
+     * o desde claims del JWT (clienteId, clienteNombre).
+     */
+    CREATE TABLE cliente
+    (
+        id           SERIAL PRIMARY KEY,
+        usuario_id   INT NOT NULL UNIQUE,
+        ruc          VARCHAR(11) UNIQUE,
+        dni          VARCHAR(8) UNIQUE,
+        razon_social VARCHAR(200),
+        nombre       VARCHAR(100) NOT NULL,
+        apellido     VARCHAR(100),
+        telefono     VARCHAR(20),
+        direccion    TEXT,
+        activo       BOOLEAN               DEFAULT TRUE,
+        created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (usuario_id) REFERENCES usuario (id)
+    );
+    
+    -- Índices
+    CREATE INDEX idx_usuario_rol ON usuario (rol_id);
+    CREATE INDEX idx_cliente_usuario ON cliente (usuario_id);
+  02-data.sql: |-
+    -- ============================================
+    -- IAM DB — Seed Data
+    -- Datos extraídos de la DB monolítica original
+    -- ============================================
+    
+    -- Roles
+    INSERT INTO rol (nombre, descripcion) VALUES
+        ('admin',      'Administrador general del sistema'),
+        ('gerente',    'Gerencia — acceso a reportes y aprobaciones'),
+        ('vendedor',   'Gestión de cotizaciones, pedidos y facturación'),
+        ('almacenero', 'Control de stock, recepciones y despachos'),
+        ('rrhh',       'Recursos humanos: empleados, asistencia y planilla'),
+        ('cliente',    'Cliente del portal web');
+    
+    -- Permisos (formato simplificado: <dominio>.<accion>)
+    INSERT INTO permiso (codigo, modulo, accion, descripcion) VALUES
+        ('cotizacion.ver',       'ventas',    'ver',      'Ver listado y detalle de cotizaciones'),
+        ('cotizacion.crear',     'ventas',    'crear',    'Crear nuevas cotizaciones'),
+        ('cotizacion.editar',    'ventas',    'editar',   'Editar cotizaciones existentes'),
+        ('cotizacion.aprobar',   'ventas',    'aprobar',  'Aprobar o rechazar cotizaciones'),
+        ('pedido.ver',           'ventas',    'ver',      'Ver pedidos'),
+        ('pedido.crear',         'ventas',    'crear',    'Registrar pedidos'),
+        ('pedido.editar',        'ventas',    'editar',   'Actualizar estado de pedidos'),
+        ('comprobante.crear',    'ventas',    'crear',    'Emitir facturas y boletas'),
+        ('stock.ver',            'logistica', 'ver',      'Consultar stock de productos'),
+        ('stock.editar',         'logistica', 'editar',   'Ajustar stock manualmente'),
+        ('orden_compra.ver',     'logistica', 'ver',      'Ver órdenes de compra'),
+        ('orden_compra.crear',   'logistica', 'crear',    'Crear órdenes de compra'),
+        ('recepcion.crear',      'logistica', 'crear',    'Registrar recepciones de mercadería'),
+        ('empleado.ver',         'rrhh',      'ver',      'Ver empleados'),
+        ('empleado.crear',       'rrhh',      'crear',    'Registrar nuevos empleados'),
+        ('asistencia.ver',       'rrhh',      'ver',      'Ver registros de asistencia'),
+        ('planilla.ver',         'rrhh',      'ver',      'Ver planillas'),
+        ('planilla.procesar',    'rrhh',      'aprobar',  'Procesar planilla mensual'),
+        ('reporte.ver',          'reportes',  'ver',      'Acceder a reportes gerenciales'),
+        ('usuario.gestionar',    'admin',     'editar',   'Gestionar usuarios y roles');
+    
+    -- admin: todos los permisos
+    INSERT INTO rol_permiso (rol_id, permiso_id) SELECT 1, id FROM permiso;
+    
+    -- gerente
+    INSERT INTO rol_permiso (rol_id, permiso_id) SELECT 2, id FROM permiso
+    WHERE codigo IN ('cotizacion.ver','cotizacion.aprobar','pedido.ver','comprobante.crear',
+                     'stock.ver','orden_compra.ver','empleado.ver','planilla.ver','reporte.ver');
+    
+    -- vendedor
+    INSERT INTO rol_permiso (rol_id, permiso_id) SELECT 3, id FROM permiso
+    WHERE codigo IN ('cotizacion.ver','cotizacion.crear','cotizacion.editar',
+                     'pedido.ver','pedido.crear','pedido.editar','comprobante.crear','stock.ver');
+    
+    -- almacenero
+    INSERT INTO rol_permiso (rol_id, permiso_id) SELECT 4, id FROM permiso
+    WHERE codigo IN ('stock.ver','stock.editar','orden_compra.ver','orden_compra.crear',
+                     'recepcion.crear','pedido.ver','pedido.editar');
+    
+    -- rrhh
+    INSERT INTO rol_permiso (rol_id, permiso_id) SELECT 5, id FROM permiso
+    WHERE codigo IN ('empleado.ver','empleado.crear','asistencia.ver','planilla.ver','planilla.procesar');
+    
+    -- cliente
+    INSERT INTO rol_permiso (rol_id, permiso_id) SELECT 6, id FROM permiso
+    WHERE codigo IN ('cotizacion.ver','cotizacion.crear');
+    
+    -- Usuarios (hashes BCrypt copiados del proyecto monolito original)
+    INSERT INTO usuario (rol_id, tipo, username, email, password_hash) VALUES
+        (1, 'INTERNO', 'admin',            'admin@siderurgicaperu.com',     '$2a$10$R2Svc.PJ15/GYbLHXr74We4/uT4Oo.FRyXw21Ey/yVaopWKiBW2nW'),   -- pwd: admin
+        (2, 'INTERNO', 'gerente.vargas',   'gerente@siderurgicaperu.com',   '$2b$12$HASH_GERE_001'),                                         -- placeholder
+        (3, 'INTERNO', 'vendedor.luna',    'vluna@siderurgicaperu.com',     '$2a$10$15YlWTm1vAAMLsGtQj45xuFngVtd2AozwCl3qjudzT6jjoBT/33FW'),  -- pwd: luna
+        (3, 'INTERNO', 'vendedor.rios',    'vrios@siderurgicaperu.com',     '$2b$12$HASH_VEND_002'),                                         -- placeholder
+        (4, 'INTERNO', 'almacen.huanca',   'ahuanca@siderurgicaperu.com',   '$2a$10$xA8ssFOmy267L2P/5eHzeeuxlGC2L0RKvE2dRLyvCgcMQYk5go8r6'), -- pwd: huanca
+        (5, 'INTERNO', 'rrhh.mendoza',     'rmendoza@siderurgicaperu.com',  '$2b$12$HASH_RRHH_001'),                                         -- placeholder
+        (6, 'CLIENTE', 'acero_sur',        'compras@acerosur.com.pe',       '$2a$10$GB4LsBTGQo4dVC4lNUNWVePNFcTSsB9H9S.CvJAKq3b.9wtzk6Sri'), -- pwd: acero
+        (6, 'CLIENTE', 'construcciones',   'admin@construccionesrm.pe',     '$2a$10$12YBoiOhIR8nYztvzqs8ge/M633ScKF6Ron2uwelxdrBYbINt.8sW'), -- pwd: construcciones
+        (6, 'CLIENTE', 'silva',            'jsilva@gmail.com',              '$2a$10$mxBQoHYDxxp1HOx2AgdOs.lh2nVKSHCRVbqA7IwT9WMOEC7Il0.ou'), -- pwd: silva
+        (6, 'CLIENTE', 'ferreteria_jm',    'fjm@ferreteriajesusm.pe',       '$2a$10$XBWyCZ17sd7HpjBWP/dakuGGANEudLmfrY7kT/IeAwS0sR47fXjNG'), -- pwd: ferreteria
+        (6, 'CLIENTE', 'palacios',         'rpalacios@outlook.com',         '$2a$10$TLoldUQeHjEOCIgvjUpA8.3J41G5if5yEy/zCQvyYHYjpCsXgf.Ja');-- pwd: palacios
+    
+    -- Clientes (IDs 1-5, coinciden con los cliente_id en las cotizaciones de backend_db)
+    INSERT INTO cliente (usuario_id, ruc, razon_social, nombre, apellido, telefono, direccion) VALUES
+        (7,  '20512345678', 'Acero Sur S.A.C.',          'Carlos',  'Delgado',   '01-3451234', 'Av. Industrial 432, Villa El Salvador, Lima'),
+        (8,  '20601234567', 'Construcciones R&M E.I.R.L.','Roberto', 'Meza',      '01-2567890', 'Jr. Los Pinos 123, San Juan de Lurigancho, Lima'),
+        (9,  NULL,          NULL,                         'Jorge',   'Silva',     '987654321',  'Calle Las Flores 45, Surquillo, Lima'),
+        (10, '10345678901', NULL,                         'Fernando','Quispe',    '976543210',  'Av. Grau 890, Trujillo'),
+        (11, NULL,          NULL,                         'Rosa',    'Palacios',  '965432109',  'Jr. Amazonas 234, Arequipa');
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pgdata-iam-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-iam
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-iam
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: postgres-iam
+    spec:
+      containers:
+        - name: postgres-iam
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_DB
+              value: iam_db
+            - name: POSTGRES_USER
+              value: admin
+            - name: POSTGRES_PASSWORD
+              value: admin
+          ports:
+            - containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - "-U"
+                - admin
+                - "-d"
+                - iam_db
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          volumeMounts:
+            - mountPath: /docker-entrypoint-initdb.d/01-schema.sql
+              name: postgres-iam-vol
+              subPath: 01-schema.sql
+            - mountPath: /docker-entrypoint-initdb.d/02-data.sql
+              name: postgres-iam-vol
+              subPath: 02-data.sql
+            - mountPath: /var/lib/postgresql/data
+              name: pgdata-iam-storage
+      volumes:
+        - name: postgres-iam-vol
+          configMap:
+            name: postgres-iam-cm
+        - name: pgdata-iam-storage
+          persistentVolumeClaim:
+            claimName: pgdata-iam-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-iam
+spec:
+  ports:
+    - port: 5432
+      targetPort: 5432
+  selector:
+    app: postgres-iam

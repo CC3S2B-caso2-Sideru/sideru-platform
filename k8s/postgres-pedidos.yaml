@@ -1,0 +1,653 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-pedidos-cm
+data:
+  01-schema.sql: |-
+    -- ============================================
+    -- Backend DB — Schema (monolito residual)
+    -- Tablas: Ventas + Logística + RRHH
+    --
+    -- NOTA: Las FKs a tablas en otras DBs se eliminaron
+    -- (cliente, usuario, producto están en iam_db y catalogo_db).
+    -- Las columnas de referencia se mantienen como INT para trazabilidad.
+    --
+    -- Las columnas producto_sku y producto_nombre en los detalles
+    -- son snapshots inmutables: capturan los datos del producto
+    -- al momento de la cotización/pedido. Esto evita dependencia
+    -- del Catálogo en consultas y garantiza integridad histórica
+    -- de los documentos comerciales.
+    -- ============================================
+    
+    -- ==============================
+    --  VENTAS
+    -- ==============================
+    
+    CREATE TYPE estado_cotizacion AS ENUM (
+        'borrador', 'enviada', 'aceptada', 'rechazada', 'expirada'
+    );
+    
+    CREATE TABLE cotizacion
+    (
+        id               SERIAL PRIMARY KEY,
+        cliente_id       INT               NOT NULL,  -- FK lógica a iam_db.cliente
+        fecha_emision    TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+        fecha_expiracion DATE              NOT NULL,
+        estado           estado_cotizacion NOT NULL DEFAULT 'borrador',
+        observaciones    TEXT,
+        subtotal         DECIMAL(12, 2)    NOT NULL DEFAULT 0,
+        descuento_total  DECIMAL(12, 2)    NOT NULL DEFAULT 0,
+        igv              DECIMAL(12, 2)    NOT NULL DEFAULT 0,
+        total            DECIMAL(12, 2)    NOT NULL DEFAULT 0,
+        created_at       TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+        updated_at       TIMESTAMPTZ       NOT NULL DEFAULT NOW()
+    );
+    
+    CREATE TABLE cotizacion_detalle
+    (
+        id              SERIAL PRIMARY KEY,
+        cotizacion_id   INT            NOT NULL,
+        producto_id     INT            NOT NULL,  -- FK lógica a catalogo_db.producto
+        /*
+         * Snapshot inmutable del producto al momento de la cotización.
+         * Garantiza que el documento conserve los datos originales aunque
+         * el producto cambie en el Catálogo.
+         */
+        producto_sku    VARCHAR(50)    NOT NULL,
+        producto_nombre VARCHAR(150)   NOT NULL,
+        cantidad        INT            NOT NULL CHECK (cantidad > 0),
+        precio_unitario DECIMAL(10, 2) NOT NULL,
+        descuento       DECIMAL(5, 2)  NOT NULL DEFAULT 0,
+        subtotal        DECIMAL(12, 2) NOT NULL,
+        created_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (cotizacion_id) REFERENCES cotizacion (id)
+    );
+    
+    CREATE TYPE estado_pedido AS ENUM (
+        'pendiente', 'confirmado', 'en_preparacion',
+        'despachado', 'entregado', 'cancelado', 'rechazado_stock'
+    );
+    
+    CREATE TABLE pedido
+    (
+        id             SERIAL PRIMARY KEY,
+        cotizacion_id  INT            NOT NULL UNIQUE,
+        cliente_id     INT            NOT NULL,  -- FK lógica a iam_db.cliente
+        fecha_pedido   TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        estado         estado_pedido  NOT NULL DEFAULT 'pendiente',
+        motivo_rechazo TEXT,
+        total          DECIMAL(12, 2) NOT NULL,
+        created_at     TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (cotizacion_id) REFERENCES cotizacion (id)
+    );
+    
+    CREATE TABLE pedido_detalle
+    (
+        id              SERIAL PRIMARY KEY,
+        pedido_id       INT            NOT NULL,
+        producto_id     INT            NOT NULL,  -- FK lógica a catalogo_db.producto
+        /*
+         * Snapshot inmutable del producto al momento del pedido.
+         */
+        producto_sku    VARCHAR(50)    NOT NULL,
+        producto_nombre VARCHAR(150)   NOT NULL,
+        cantidad        INT            NOT NULL CHECK (cantidad > 0),
+        precio_unitario DECIMAL(10, 2) NOT NULL,
+        descuento       DECIMAL(5, 2)  NOT NULL DEFAULT 0,
+        subtotal        DECIMAL(12, 2) NOT NULL,
+        created_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (pedido_id) REFERENCES pedido (id)
+    );
+    
+    CREATE TYPE tipo_comprobante AS ENUM ('factura', 'boleta');
+    CREATE TYPE estado_pago AS ENUM ('pendiente', 'pagado', 'anulado');
+    
+    CREATE TABLE comprobante
+    (
+        id            SERIAL PRIMARY KEY,
+        pedido_id     INT              NOT NULL,
+        tipo          tipo_comprobante NOT NULL,
+        serie         VARCHAR(4)       NOT NULL,
+        numero        VARCHAR(8)       NOT NULL,
+        fecha_emision TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+        subtotal      DECIMAL(12, 2)   NOT NULL,
+        igv           DECIMAL(12, 2)   NOT NULL,
+        total         DECIMAL(12, 2)   NOT NULL,
+        estado_pago   estado_pago      NOT NULL DEFAULT 'pendiente',
+        fecha_pago    TIMESTAMPTZ,
+        metodo_pago   VARCHAR(50),
+        created_at    TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+        UNIQUE (serie, numero),
+        FOREIGN KEY (pedido_id) REFERENCES pedido (id)
+    );
+    
+    -- Índices Ventas
+    CREATE INDEX idx_cotizacion_cliente ON cotizacion (cliente_id);
+    CREATE INDEX idx_cotizacion_estado ON cotizacion (estado);
+    CREATE INDEX idx_pedido_estado ON pedido (estado);
+    CREATE INDEX idx_pedido_cliente ON pedido (cliente_id);
+    CREATE INDEX idx_comprobante_pedido ON comprobante (pedido_id);
+    CREATE INDEX idx_pedido_created_at ON pedido (created_at);
+    CREATE INDEX idx_comprobante_created_at ON comprobante (created_at);
+    
+    -- ==============================
+    --  LOGÍSTICA
+    -- ==============================
+    
+    CREATE TABLE proveedor
+    (
+        id           SERIAL PRIMARY KEY,
+        ruc          VARCHAR(11) UNIQUE NOT NULL,
+        razon_social VARCHAR(200)       NOT NULL,
+        contacto     VARCHAR(100),
+        email        VARCHAR(150),
+        telefono     VARCHAR(20),
+        direccion    TEXT,
+        activo       BOOLEAN                     DEFAULT TRUE,
+        created_at   TIMESTAMPTZ        NOT NULL DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ        NOT NULL DEFAULT NOW()
+    );
+    
+    CREATE TYPE estado_orden_compra AS ENUM (
+        'borrador', 'enviada', 'confirmada', 'recibida_parcial', 'recibida', 'anulada'
+    );
+    
+    CREATE TABLE orden_compra
+    (
+        id                SERIAL PRIMARY KEY,
+        proveedor_id      INT                 NOT NULL,
+        fecha_emision     TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
+        fecha_estimada    DATE,
+        estado            estado_orden_compra NOT NULL DEFAULT 'borrador',
+        requiere_prestamo BOOLEAN                      DEFAULT FALSE,
+        total_estimado    DECIMAL(12, 2)      NOT NULL DEFAULT 0,
+        observaciones     TEXT,
+        created_at        TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
+        updated_at        TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (proveedor_id) REFERENCES proveedor (id)
+    );
+    
+    CREATE TABLE orden_compra_detalle
+    (
+        id              SERIAL PRIMARY KEY,
+        orden_compra_id INT            NOT NULL,
+        producto_id     INT            NOT NULL,  -- FK lógica a catalogo_db
+        cantidad        INT            NOT NULL CHECK (cantidad > 0),
+        precio_unitario DECIMAL(10, 2) NOT NULL,
+        subtotal        DECIMAL(12, 2) NOT NULL,
+        created_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (orden_compra_id) REFERENCES orden_compra (id)
+    );
+    
+    CREATE TABLE recepcion_mercaderia
+    (
+        id              SERIAL PRIMARY KEY,
+        orden_compra_id INT         NOT NULL,
+        fecha_recepcion TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        observaciones   TEXT,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (orden_compra_id) REFERENCES orden_compra (id)
+    );
+    
+    CREATE TABLE recepcion_detalle
+    (
+        id                      SERIAL PRIMARY KEY,
+        recepcion_mercaderia_id INT         NOT NULL,
+        producto_id             INT         NOT NULL,  -- FK lógica a catalogo_db
+        cantidad_recibida       INT         NOT NULL CHECK (cantidad_recibida > 0),
+        created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (recepcion_mercaderia_id) REFERENCES recepcion_mercaderia (id)
+    );
+    
+    CREATE TABLE factura_proveedor
+    (
+        id              SERIAL PRIMARY KEY,
+        orden_compra_id INT            NOT NULL,
+        numero_factura  VARCHAR(50)    NOT NULL,
+        fecha_factura   DATE           NOT NULL,
+        monto_total     DECIMAL(12, 2) NOT NULL,
+        estado_pago     estado_pago    NOT NULL DEFAULT 'pendiente',
+        fecha_pago      DATE,
+        created_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (orden_compra_id) REFERENCES orden_compra (id)
+    );
+    
+    -- Índices Logística
+    CREATE INDEX idx_orden_compra_proveedor ON orden_compra (proveedor_id);
+    CREATE INDEX idx_orden_compra_estado ON orden_compra (estado);
+    CREATE INDEX idx_orden_compra_created_at ON orden_compra (created_at);
+    
+    -- ==============================
+    --  RECURSOS HUMANOS
+    -- ==============================
+    
+    CREATE TABLE cargo
+    (
+        id           SERIAL PRIMARY KEY,
+        nombre       VARCHAR(100)   NOT NULL UNIQUE,
+        descripcion  TEXT,
+        salario_base DECIMAL(10, 2) NOT NULL DEFAULT 0,
+        created_at   TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ    NOT NULL DEFAULT NOW()
+    );
+    
+    CREATE TABLE departamento
+    (
+        id         SERIAL PRIMARY KEY,
+        nombre     VARCHAR(100) NOT NULL UNIQUE,
+        created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    
+    CREATE TABLE empleado
+    (
+        id              SERIAL PRIMARY KEY,
+        usuario_id      INT UNIQUE,          -- FK lógica a iam_db.usuario
+        departamento_id INT                 NOT NULL,
+        cargo_id        INT                 NOT NULL,
+        dni             VARCHAR(8) UNIQUE   NOT NULL,
+        nombres         VARCHAR(100)        NOT NULL,
+        apellidos       VARCHAR(100)        NOT NULL,
+        email           VARCHAR(150) UNIQUE NOT NULL,
+        telefono        VARCHAR(20),
+        fecha_ingreso   DATE                NOT NULL,
+        fecha_cese      DATE,
+        salario         DECIMAL(10, 2)      NOT NULL,
+        cuenta_bancaria VARCHAR(30),
+        activo          BOOLEAN                      DEFAULT TRUE,
+        created_at      TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (departamento_id) REFERENCES departamento (id),
+        FOREIGN KEY (cargo_id) REFERENCES cargo (id)
+    );
+    
+    CREATE TYPE tipo_marcado AS ENUM ('entrada', 'salida');
+    
+    CREATE TABLE asistencia
+    (
+        id          SERIAL PRIMARY KEY,
+        empleado_id INT          NOT NULL,
+        fecha       DATE         NOT NULL,
+        tipo        tipo_marcado NOT NULL,
+        hora        TIME         NOT NULL,
+        ip_origen   VARCHAR(45),
+        observacion TEXT,
+        created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (empleado_id) REFERENCES empleado (id)
+    );
+    
+    CREATE TYPE estado_justificacion AS ENUM ('pendiente', 'aprobada', 'rechazada');
+    
+    CREATE TABLE justificacion
+    (
+        id               SERIAL PRIMARY KEY,
+        empleado_id      INT                  NOT NULL,
+        fecha_incidencia DATE                 NOT NULL,
+        tipo_incidencia  VARCHAR(50)          NOT NULL,
+        descripcion      TEXT                 NOT NULL,
+        estado           estado_justificacion NOT NULL DEFAULT 'pendiente',
+        revisado_por     INT,
+        fecha_revision   TIMESTAMPTZ,
+        created_at       TIMESTAMPTZ          NOT NULL DEFAULT NOW(),
+        updated_at       TIMESTAMPTZ          NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (empleado_id) REFERENCES empleado (id),
+        FOREIGN KEY (revisado_por) REFERENCES empleado (id)
+    );
+    
+    CREATE TABLE planilla
+    (
+        id            SERIAL PRIMARY KEY,
+        periodo       VARCHAR(7)  NOT NULL,
+        fecha_proceso TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        procesado_por INT,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (periodo),
+        FOREIGN KEY (procesado_por) REFERENCES empleado (id)
+    );
+    
+    CREATE TABLE planilla_detalle
+    (
+        id                  SERIAL PRIMARY KEY,
+        planilla_id         INT            NOT NULL,
+        empleado_id         INT            NOT NULL,
+        dias_trabajados     INT            NOT NULL DEFAULT 0,
+        dias_falta          INT            NOT NULL DEFAULT 0,
+        dias_tardanza       INT            NOT NULL DEFAULT 0,
+        horas_extras        DECIMAL(5, 2)  NOT NULL DEFAULT 0,
+        salario_bruto       DECIMAL(10, 2) NOT NULL,
+        descuento_faltas    DECIMAL(10, 2) NOT NULL DEFAULT 0,
+        descuento_tardanzas DECIMAL(10, 2) NOT NULL DEFAULT 0,
+        otros_descuentos    DECIMAL(10, 2) NOT NULL DEFAULT 0,
+        bonificaciones      DECIMAL(10, 2) NOT NULL DEFAULT 0,
+        salario_neto        DECIMAL(10, 2) NOT NULL,
+        cumplio_horas       BOOLEAN        NOT NULL DEFAULT TRUE,
+        fecha_deposito      DATE,
+        created_at          TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        updated_at          TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (planilla_id) REFERENCES planilla (id),
+        FOREIGN KEY (empleado_id) REFERENCES empleado (id)
+    );
+    
+    -- Índices RRHH
+    CREATE INDEX idx_empleado_usuario ON empleado (usuario_id);
+    CREATE INDEX idx_asistencia_empleado_fecha ON asistencia (empleado_id, fecha);
+    CREATE INDEX idx_justificacion_empleado ON justificacion (empleado_id);
+    CREATE INDEX idx_planilla_detalle_planilla ON planilla_detalle (planilla_id);
+    CREATE INDEX idx_planilla_detalle_empleado ON planilla_detalle (empleado_id);
+    CREATE INDEX idx_planilla_detalle_created_at ON planilla_detalle (created_at);
+  02-data.sql: |-
+    -- ============================================
+    -- Backend DB — Seed Data
+    -- ============================================
+    
+    -- Proveedores
+    INSERT INTO proveedor (ruc, razon_social, contacto, email, telefono, direccion) VALUES
+        ('20100070970', 'Aceros Arequipa S.A.',         'Javier Salas',     'ventas@acerosarequipa.com.pe',  '054-380700', 'Av. Enrique Meiggs s/n, Parque Industrial, Arequipa'),
+        ('20100017491', 'Corporación Aceros Chilca S.A.','María Quispe',     'mquispe@aceroschi.pe',          '01-3800900', 'Carretera Panamericana Sur km 60, Chilca, Lima'),
+        ('20503480264', 'Ferreyros S.A.',               'Luis Pariona',     'lpariona@ferreyros.com.pe',     '01-6146000', 'Av. Argentina 3099, Callao'),
+        ('20100007641', 'Sider Perú S.A.',              'Giuliana Mendez',  'gmendez@siderperu.com.pe',      '043-395050', 'Av. Gálvez Chipoco s/n, Chimbote, Áncash');
+    
+    -- Departamentos
+    INSERT INTO departamento (nombre) VALUES
+        ('Gerencia General'), ('Ventas'), ('Logística y Almacén'),
+        ('Recursos Humanos'), ('Administración y Finanzas');
+    
+    -- Cargos
+    INSERT INTO cargo (nombre, descripcion, salario_base) VALUES
+        ('Gerente General',         'Dirección estratégica de la empresa',        8500.00),
+        ('Jefe de Ventas',          'Coordinación del equipo comercial',          4200.00),
+        ('Vendedor',                'Atención de clientes y cotizaciones',        2400.00),
+        ('Jefe de Almacén',         'Control de stock y logística',               3800.00),
+        ('Almacenero',              'Recepción, almacenamiento y despacho',       1800.00),
+        ('Administrador de RRHH',   'Gestión de personal y planilla',             3200.00),
+        ('Asistente Administrativo','Soporte administrativo y contable',          1900.00);
+    
+    -- Empleados
+    INSERT INTO empleado (usuario_id, departamento_id, cargo_id, dni, nombres, apellidos, email, telefono, fecha_ingreso, salario, cuenta_bancaria) VALUES
+        (1,  1, 1, '08123456', 'Miguel',    'Torres Salas',      'admin@siderurgicaperu.com',    '01-4561234', '2018-03-01', 8500.00, '00-123-456789'),
+        (2,  1, 1, '09234567', 'Patricia',  'Vargas Huamán',     'gerente@siderurgicaperu.com',  '01-4561235', '2019-06-15', 8500.00, '00-123-456790'),
+        (3,  2, 3, '10345678', 'Lucía',     'Luna Ccopa',        'vluna@siderurgicaperu.com',    '987001122', '2021-01-10', 2400.00, '00-234-567891'),
+        (4,  2, 3, '11456789', 'Marco',     'Ríos Paredes',      'vrios@siderurgicaperu.com',    '987002233', '2021-04-05', 2400.00, '00-234-567892'),
+        (5,  3, 4, '12567890', 'Eduardo',   'Huanca Flores',     'ahuanca@siderurgicaperu.com',  '987003344', '2020-07-20', 3800.00, '00-345-678903'),
+        (6,  4, 6, '13678901', 'Carmen',    'Mendoza Díaz',      'rmendoza@siderurgicaperu.com', '987004455', '2020-02-01', 3200.00, '00-456-789014'),
+        (NULL,2, 2, '14789012', 'Andrés',   'Castillo Vega',     'acastillo@siderurgicaperu.com','987005566', '2017-09-12', 4200.00, '00-234-567893'),
+        (NULL,3, 5, '15890123', 'Rocío',    'Apaza Torres',      'rapaza@siderurgicaperu.com',   '987006677', '2022-03-15', 1800.00, '00-345-678904'),
+        (NULL,5, 7, '16901234', 'Silvana',  'Campos Ruiz',       'scampos@siderurgicaperu.com',  '987007788', '2023-01-09', 1900.00, '00-567-890125');
+    
+    /*
+     * Cotizaciones con snapshots de producto (producto_sku, producto_nombre).
+     * Los IDs de producto (1-21) referencian catalogo_db.producto.id.
+     *
+     * Mapeo producto_id → (sku, nombre) para backfill:
+     *   1  → BAR-COR-6MM,  Varilla corrugada 6mm x 9m
+     *   2  → BAR-COR-8MM,  Varilla corrugada 8mm x 9m
+     *   3  → BAR-COR-12MM, Varilla corrugada 12mm x 9m
+     *   4  → BAR-LIS-16MM, Barra lisa 16mm x 6m
+     *   5  → PER-ANG-2X2,  Ángulo 2"x2"x3/16" x 6m
+     *   6  → PER-VIG-4,    Viga H 4" x 13lb/pie x 6m
+     *   7  → PER-CAN-3,    Canal C 3" x 5lb/pie x 6m
+     *   8  → PLA-CAL-2MM,  Plancha laminada caliente 2mm
+     *   9  → PLA-GAL-1MM,  Plancha galvanizada 1mm
+     *   10 → TUB-NEG-1,    Tubo negro 1" x 6m
+     *   11 → TUB-GAL-3_4,  Tubo galvanizado 3/4" x 6m
+     *   12 → ALA-REC-16,   Alambre recocido N°16 x 30kg
+     *   13 → MAL-ELS-15,   Malla electrosoldada 15x15cm
+     *   14 → ACR-BAR-001,  Barra de acero 1/2"
+     *   15 → ACR-BAR-002,  Barra de acero 3/4"
+     *   16 → TUB-NEG-001,  Tubo negro 2"
+     *   17 → TUB-GAL-002,  Tubo galvanizado 1"
+     *   18 → PLA-ACE-001,  Plancha de acero 1mm
+     *   19 → PLA-ACE-002,  Plancha de acero 3mm
+     *   20 → PER-ANG-001,  Ángulo 2x2
+     *   21 → PER-CAN-002,  Canal U 3"
+     */
+    
+    -- Cotización 1: cliente Acero Sur — aceptada → tiene pedido
+    INSERT INTO cotizacion (cliente_id, fecha_emision, fecha_expiracion, estado, subtotal, descuento_total, igv, total) VALUES
+        (1, '2025-03-10 09:00:00-05', '2025-03-17', 'aceptada', 3364.00, 168.20, 575.47, 3771.27);
+    
+    INSERT INTO cotizacion_detalle (cotizacion_id, producto_id, producto_sku, producto_nombre, cantidad, precio_unitario, descuento, subtotal) VALUES
+        (1, 1, 'BAR-COR-6MM',  'Varilla corrugada 6mm x 9m',         50, 18.50, 5.00,  877.25),
+        (1, 2, 'BAR-COR-8MM',  'Varilla corrugada 8mm x 9m',         30, 28.90, 5.00,  822.15),
+        (1, 5, 'PER-ANG-2X2',  'Ángulo 2"x2"x3/16" x 6m',            20, 55.00, 5.00, 1045.00),
+        (1, 10,'TUB-NEG-1',    'Tubo negro 1" x 6m',                 15, 38.00, 5.00,  541.50);
+    
+    -- Cotización 2: cliente Construcciones R&M — aceptada → tiene pedido
+    INSERT INTO cotizacion (cliente_id, fecha_emision, fecha_expiracion, estado, subtotal, descuento_total, igv, total) VALUES
+        (2, '2025-03-12 11:30:00-05', '2025-03-19', 'aceptada', 7540.00, 754.00, 1223.46, 8009.46);
+    
+    INSERT INTO cotizacion_detalle (cotizacion_id, producto_id, producto_sku, producto_nombre, cantidad, precio_unitario, descuento, subtotal) VALUES
+        (2, 3, 'BAR-COR-12MM', 'Varilla corrugada 12mm x 9m',         60, 58.00, 10.00, 3132.00),
+        (2, 6, 'PER-VIG-4',    'Viga H 4" x 13lb/pie x 6m',           15, 195.00,10.00, 2632.50),
+        (2, 8, 'PLA-CAL-2MM',  'Plancha laminada caliente 2mm',       10, 210.00,10.00, 1890.00);
+    
+    -- Cotización 3: cliente Jorge Silva — enviada (pendiente respuesta)
+    INSERT INTO cotizacion (cliente_id, fecha_emision, fecha_expiracion, estado, subtotal, descuento_total, igv, total) VALUES
+        (3, '2025-04-01 14:00:00-05', '2025-04-08', 'enviada', 693.00, 0, 124.74, 817.74);
+    
+    INSERT INTO cotizacion_detalle (cotizacion_id, producto_id, producto_sku, producto_nombre, cantidad, precio_unitario, descuento, subtotal) VALUES
+        (3, 11,'TUB-GAL-3_4',  'Tubo galvanizado 3/4" x 6m',         10, 44.00, 0, 440.00),
+        (3, 12,'ALA-REC-16',   'Alambre recocido N°16 x 30kg',         1, 98.00, 0,  98.00),
+        (3, 1, 'BAR-COR-6MM',  'Varilla corrugada 6mm x 9m',          5, 18.50, 0,  92.50),
+        (3, 10,'TUB-NEG-1',    'Tubo negro 1" x 6m',                  1, 38.00, 0,  38.00);
+    
+    -- Cotización 4: cliente Ferretería JM — rechazada
+    INSERT INTO cotizacion (cliente_id, fecha_emision, fecha_expiracion, estado, observaciones, subtotal, descuento_total, igv, total) VALUES
+        (4, '2025-02-20 10:00:00-05', '2025-02-27', 'rechazada', 'Cliente no aceptó precio de vigas.', 1560.00, 0, 280.80, 1840.80);
+    
+    INSERT INTO cotizacion_detalle (cotizacion_id, producto_id, producto_sku, producto_nombre, cantidad, precio_unitario, descuento, subtotal) VALUES
+        (4, 6, 'PER-VIG-4', 'Viga H 4" x 13lb/pie x 6m', 8, 195.00, 0, 1560.00);
+    
+    -- Cotización 5: cliente Rosa Palacios — borrador
+    INSERT INTO cotizacion (cliente_id, fecha_emision, fecha_expiracion, estado, subtotal, descuento_total, igv, total) VALUES
+        (5, '2025-04-05 16:00:00-05', '2025-04-12', 'borrador', 185.00, 0, 33.30, 218.30);
+    
+    INSERT INTO cotizacion_detalle (cotizacion_id, producto_id, producto_sku, producto_nombre, cantidad, precio_unitario, descuento, subtotal) VALUES
+        (5, 9, 'PLA-GAL-1MM', 'Plancha galvanizada 1mm', 1, 185.00, 0, 185.00);
+    
+    -- Pedidos
+    INSERT INTO pedido (cotizacion_id, cliente_id, fecha_pedido, estado, total) VALUES
+        (1, 1, '2025-03-11 08:30:00-05', 'entregado', 3771.27),
+        (2, 2, '2025-03-13 09:00:00-05', 'en_preparacion', 8009.46);
+    
+    INSERT INTO pedido_detalle (pedido_id, producto_id, producto_sku, producto_nombre, cantidad, precio_unitario, descuento, subtotal) VALUES
+        (1, 1, 'BAR-COR-6MM',  'Varilla corrugada 6mm x 9m',         50, 18.50, 5.00,  877.25),
+        (1, 2, 'BAR-COR-8MM',  'Varilla corrugada 8mm x 9m',         30, 28.90, 5.00,  822.15),
+        (1, 5, 'PER-ANG-2X2',  'Ángulo 2"x2"x3/16" x 6m',            20, 55.00, 5.00, 1045.00),
+        (1, 10,'TUB-NEG-1',    'Tubo negro 1" x 6m',                 15, 38.00, 5.00,  541.50),
+        (2, 3, 'BAR-COR-12MM', 'Varilla corrugada 12mm x 9m',        60, 58.00, 10.00, 3132.00),
+        (2, 6, 'PER-VIG-4',    'Viga H 4" x 13lb/pie x 6m',          15, 195.00,10.00, 2632.50),
+        (2, 8, 'PLA-CAL-2MM',  'Plancha laminada caliente 2mm',      10, 210.00,10.00, 1890.00);
+    
+    -- Pedido 3: rechazado por falta de stock
+    INSERT INTO pedido (cotizacion_id, cliente_id, fecha_pedido, estado, motivo_rechazo, total) VALUES
+        (4, 4, '2025-02-21 10:15:00-05', 'rechazado_stock',
+         'Stock insuficiente de Viga H 4": disponible 5 unidades, solicitadas 8.',
+         1840.80);
+    
+    INSERT INTO pedido_detalle (pedido_id, producto_id, producto_sku, producto_nombre, cantidad, precio_unitario, descuento, subtotal) VALUES
+        (3, 6, 'PER-VIG-4', 'Viga H 4" x 13lb/pie x 6m', 8, 195.00, 0, 1560.00);
+    
+    -- Comprobantes
+    INSERT INTO comprobante (pedido_id, tipo, serie, numero, fecha_emision, subtotal, igv, total, estado_pago, fecha_pago, metodo_pago) VALUES
+        (1, 'factura', 'F001', '00000001', '2025-03-11 12:00:00-05', 3364.00, 407.27, 3771.27, 'pagado', '2025-03-11 15:30:00-05', 'transferencia'),
+        (2, 'factura', 'F001', '00000002', '2025-03-13 10:00:00-05', 7540.00, 469.46, 8009.46, 'pendiente', NULL, 'transferencia');
+    
+    -- Órdenes de Compra
+    INSERT INTO orden_compra (proveedor_id, fecha_emision, fecha_estimada, estado, requiere_prestamo, total_estimado, observaciones) VALUES
+        (1, '2025-02-22 09:00:00-05', '2025-03-05', 'recibida', FALSE, 9750.00,
+         'Reposición urgente de Viga H tras rechazo de pedido #3.');
+    
+    INSERT INTO orden_compra_detalle (orden_compra_id, producto_id, cantidad, precio_unitario, subtotal) VALUES
+        (1, 6, 50, 175.00, 8750.00),
+        (1, 7, 10,  70.00, 700.00),
+        (1, 8,  1, 140.00, 140.00);
+    
+    INSERT INTO orden_compra (proveedor_id, fecha_emision, fecha_estimada, estado, requiere_prestamo, total_estimado) VALUES
+        (4, '2025-04-02 11:00:00-05', '2025-04-20', 'confirmada', TRUE, 24600.00);
+    
+    INSERT INTO orden_compra_detalle (orden_compra_id, producto_id, cantidad, precio_unitario, subtotal) VALUES
+        (2, 1, 500, 14.00,  7000.00),
+        (2, 2, 400, 22.00,  8800.00),
+        (2, 3, 150, 44.00,  6600.00),
+        (2, 4, 100, 32.00,  3200.00),
+        (2, 10,200, 25.00,  5000.00);
+    
+    -- Recepción de Mercadería
+    INSERT INTO recepcion_mercaderia (orden_compra_id, fecha_recepcion, observaciones) VALUES
+        (1, '2025-03-04 08:00:00-05', 'Mercadería recibida conforme, sin observaciones.');
+    
+    INSERT INTO recepcion_detalle (recepcion_mercaderia_id, producto_id, cantidad_recibida) VALUES
+        (1, 6, 50), (1, 7, 10), (1, 8, 1);
+    
+    -- Facturas de Proveedor
+    INSERT INTO factura_proveedor (orden_compra_id, numero_factura, fecha_factura, monto_total, estado_pago, fecha_pago) VALUES
+        (1, 'F001-00045231', '2025-03-04', 9750.00, 'pagado', '2025-03-15');
+    
+    INSERT INTO factura_proveedor (orden_compra_id, numero_factura, fecha_factura, monto_total, estado_pago) VALUES
+        (2, 'F001-00048890', '2025-04-02', 24600.00, 'pendiente');
+    
+    -- Asistencia (Abril 2025)
+    INSERT INTO asistencia (empleado_id, fecha, tipo, hora, ip_origen) VALUES
+        (3, '2025-04-07', 'entrada', '08:02', '192.168.1.10'),
+        (3, '2025-04-07', 'salida',  '17:01', '192.168.1.10'),
+        (3, '2025-04-08', 'entrada', '08:05', '192.168.1.10'),
+        (3, '2025-04-08', 'salida',  '17:00', '192.168.1.10'),
+        (3, '2025-04-09', 'entrada', '08:35', '192.168.1.10'),
+        (3, '2025-04-09', 'salida',  '17:00', '192.168.1.10'),
+        (3, '2025-04-10', 'entrada', '08:01', '192.168.1.10'),
+        (3, '2025-04-10', 'salida',  '17:02', '192.168.1.10'),
+        (3, '2025-04-11', 'entrada', '08:00', '192.168.1.10'),
+        (3, '2025-04-11', 'salida',  '17:00', '192.168.1.10'),
+        (5, '2025-04-07', 'entrada', '07:58', '192.168.1.20'),
+        (5, '2025-04-07', 'salida',  '17:00', '192.168.1.20'),
+        (5, '2025-04-08', 'entrada', '08:00', '192.168.1.20'),
+        (5, '2025-04-08', 'salida',  '17:05', '192.168.1.20'),
+        (5, '2025-04-10', 'entrada', '08:02', '192.168.1.20'),
+        (5, '2025-04-10', 'salida',  '17:00', '192.168.1.20'),
+        (5, '2025-04-11', 'entrada', '08:00', '192.168.1.20'),
+        (5, '2025-04-11', 'salida',  '17:00', '192.168.1.20'),
+        (8, '2025-04-07', 'entrada', '08:00', '192.168.1.30'),
+        (8, '2025-04-07', 'salida',  '17:00', '192.168.1.30'),
+        (8, '2025-04-08', 'entrada', '08:03', '192.168.1.30'),
+        (8, '2025-04-08', 'salida',  '17:00', '192.168.1.30'),
+        (8, '2025-04-09', 'entrada', '08:01', '192.168.1.30'),
+        (8, '2025-04-09', 'salida',  '17:00', '192.168.1.30'),
+        (8, '2025-04-10', 'entrada', '08:00', '192.168.1.30'),
+        (8, '2025-04-10', 'salida',  '17:02', '192.168.1.30'),
+        (8, '2025-04-11', 'entrada', '08:00', '192.168.1.30'),
+        (8, '2025-04-11', 'salida',  '17:00', '192.168.1.30');
+    
+    -- Justificaciones
+    INSERT INTO justificacion (empleado_id, fecha_incidencia, tipo_incidencia, descripcion, estado, revisado_por, fecha_revision) VALUES
+        (3, '2025-04-09', 'tardanza',
+         'Demora por accidente en Av. Javier Prado que bloqueó el tránsito.',
+         'aprobada', 6, '2025-04-10 09:00:00-05'),
+        (5, '2025-04-09', 'falta',
+         'Atención médica de emergencia por infección estomacal.',
+         'aprobada', 6, '2025-04-10 10:30:00-05'),
+        (8, '2025-04-14', 'tardanza',
+         'El reloj marcador presentó falla técnica a las 8:00 am.',
+         'pendiente', NULL, NULL);
+    
+    -- Planilla Marzo 2025
+    INSERT INTO planilla (periodo, fecha_proceso, procesado_por) VALUES
+        ('2025-03', '2025-04-01 10:00:00-05', 6);
+    
+    INSERT INTO planilla_detalle
+    (planilla_id, empleado_id, dias_trabajados, dias_falta, dias_tardanza,
+     horas_extras, salario_bruto, descuento_faltas, descuento_tardanzas,
+     otros_descuentos, bonificaciones, salario_neto, cumplio_horas, fecha_deposito)
+    VALUES
+        (1, 3, 21, 0, 1, 0.00, 2400.00,   0.00,  40.00,   0.00,   0.00, 2360.00, TRUE,  '2025-04-05'),
+        (1, 4, 22, 0, 0, 2.00, 2400.00,   0.00,   0.00,   0.00,  60.00, 2460.00, TRUE,  '2025-04-05'),
+        (1, 5, 21, 1, 0, 0.00, 3800.00, 172.73,   0.00,   0.00,   0.00, 3627.27, FALSE, '2025-04-05'),
+        (1, 6, 22, 0, 0, 0.00, 3200.00,   0.00,   0.00,   0.00,   0.00, 3200.00, TRUE,  '2025-04-05'),
+        (1, 7, 22, 0, 0, 4.00, 4200.00,   0.00,   0.00,   0.00, 160.00, 4360.00, TRUE,  '2025-04-05'),
+        (1, 8, 22, 0, 0, 0.00, 1800.00,   0.00,   0.00,   0.00,   0.00, 1800.00, TRUE,  '2025-04-05'),
+        (1, 9, 20, 0, 2, 0.00, 1900.00,   0.00,  57.58,   0.00,   0.00, 1842.42, FALSE, '2025-04-05');
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pgdata-pedidos-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-pedidos
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-pedidos
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: postgres-pedidos
+    spec:
+      containers:
+        - name: postgres-pedidos
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_DB
+              value: pedidos_db
+            - name: POSTGRES_USER
+              value: admin
+            - name: POSTGRES_PASSWORD
+              value: admin
+          ports:
+            - containerPort: 5432
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - "-U"
+                - admin
+                - "-d"
+                - pedidos_db
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          volumeMounts:
+            - mountPath: /docker-entrypoint-initdb.d/01-schema.sql
+              name: postgres-pedidos-vol
+              subPath: 01-schema.sql
+            - mountPath: /docker-entrypoint-initdb.d/02-data.sql
+              name: postgres-pedidos-vol
+              subPath: 02-data.sql
+            - mountPath: /var/lib/postgresql/data
+              name: pgdata-pedidos-storage
+      volumes:
+        - name: postgres-pedidos-vol
+          configMap:
+            name: postgres-pedidos-cm
+        - name: pgdata-pedidos-storage
+          persistentVolumeClaim:
+            claimName: pgdata-pedidos-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-pedidos
+spec:
+  ports:
+    - port: 5432
+      targetPort: 5432
+  selector:
+    app: postgres-pedidos
